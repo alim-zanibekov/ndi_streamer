@@ -1,0 +1,11 @@
+BasedOnStyle: GNU
+
+IndentWidth: 4
+ContinuationIndentWidth: 8
+TabWidth: 4
+ColumnLimit: 80
+UseTab: Never
+
+BreakBeforeBraces: Stroustrup
+AlwaysBreakAfterReturnType: All
+SpaceBeforeParens: ControlStatements
