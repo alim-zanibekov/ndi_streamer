@@ -37,15 +37,17 @@ main(int argc, char **argv)
 
     if (!avcodec_find_encoder_by_name(opts.video_encoder)) {
         printf("[ERROR] codec '%s' not found\n", opts.video_encoder);
-        return 0;
+        return 1;
     }
     if (!avcodec_find_encoder_by_name(opts.audio_encoder)) {
         printf("[ERROR] codec '%s' not found\n", opts.audio_encoder);
-        return 0;
+        return 1;
     }
 
-    if (!NDIlib_initialize())
-        return 0;
+    if (!NDIlib_initialize()) {
+        printf("[ERROR] Unable to initialize NDI library");
+        return 1;
+    }
 
     NDIlib_source_t source = {};
 
@@ -64,24 +66,42 @@ main(int argc, char **argv)
 
     NDIlib_recv_instance_t recv = NDIlib_recv_create_v3(&recv_create_desc);
 
-    if (!recv)
-        return 0;
+    if (!recv) {
+        printf("[ERROR] Unable to create NDI receiver instance");
+        return 1;
+    }
+
+    char ffmpeg_output_format[30];
+    if (strcmp(opts.output_format, "rtmp") == 0) {
+        snprintf(ffmpeg_output_format, sizeof ffmpeg_output_format, "flv");
+    }
+    else {
+        snprintf(ffmpeg_output_format, sizeof ffmpeg_output_format, "%s",
+                 opts.output_format);
+    }
 
     FFmpegOutputCtx *fa_ctx = new_ffmpeg_output_ctx();
     FrameConverterCtx *fc_ctx = new_frame_converter_ctx();
 
-    AVDictionary *rtsp_options = NULL;
+    AVDictionary *output_options = NULL;
+    av_dict_set(&output_options, "max_interleave_delta", "0", 0);
 
-    av_dict_set(&rtsp_options, "rtsp_transport", "tcp", 0);
+    if (strcmp(opts.output_format, "rtsp") == 0) {
+        av_dict_set(&output_options, "rtsp_transport", "tcp", 0);
+    }
 
     eh_init();
     while (eh_alive()) {
         if (fa_ctx->output != NULL) {
             ffmpeg_output_close(fa_ctx);
+#ifdef _WIN32
+            Sleep(2000);
+#else
             sleep(2);
+#endif
         }
 
-        if (ffmpeg_output_init(fa_ctx, opts.output_format, opts.output) < 0) {
+        if (ffmpeg_output_init(fa_ctx, ffmpeg_output_format, opts.output) < 0) {
             printf("[ERROR] %s", fa_ctx->error_str);
             continue;
         }
@@ -112,10 +132,12 @@ main(int argc, char **argv)
         ffmpeg_output_setup_audio(fa_ctx, opts.audio_encoder,
                                   opts.audio_bitrate);
 
-        if (ffmpeg_output_write_header(fa_ctx, &rtsp_options) < 0) {
+        if (ffmpeg_output_write_header(fa_ctx, &output_options) < 0) {
             printf("[ERROR] %s", fa_ctx->error_str);
             continue;
         }
+
+        fc_reset(fc_ctx);
 
         while (eh_alive()) {
             NDIlib_frame_type_e res = NDIlib_recv_capture_v2(
@@ -143,7 +165,6 @@ main(int argc, char **argv)
                 if (!frame) {
                     continue;
                 }
-
                 if (ffmpeg_output_send_audio_frame(fa_ctx, frame) < 0) {
                     printf("[ERROR] %s", fa_ctx->error_str);
                     break;
@@ -162,7 +183,7 @@ main(int argc, char **argv)
         }
     }
 
-    av_dict_free(&rtsp_options);
+    av_dict_free(&output_options);
 
     free_ffmpeg_output_ctx(&fa_ctx);
 
@@ -190,14 +211,20 @@ find_ndi_source(NDIlib_source_t *source)
         printf("Looking for sources");
 
         for (size_t i = 1; !no_sources; ++i) {
-            printf((i % 4 == 0) ? "\033[3D   \033[3D" : ".");
+            printf(i % 4 == 0 ? "\033[3D   \033[3D" : ".");
             fflush(stdout);
             NDIlib_find_wait_for_sources(p_find, 1000);
             p_sources = NDIlib_find_get_current_sources(p_find, &no_sources);
         }
 
+        if (!p_sources) {
+            printf("\n\nNo sources available\n");
+            break;
+        }
+
         printf("\n\nAvailable NDI sources:\n");
-        for (int i = 0; i < no_sources; ++i) {
+
+        for (uint32_t i = 0; i < no_sources; ++i) {
             printf("    %i. %s (%s)\n", i + 1, p_sources[i].p_ndi_name,
                    p_sources[i].p_url_address);
         }
@@ -205,14 +232,14 @@ find_ndi_source(NDIlib_source_t *source)
         for (;;) {
             printf("\nselect source (r - retry, e - exit): ");
 
-            size_t n = 0;
-            char *p_input = NULL;
-            getline(&p_input, &n, stdin);
-
             char input[100];
-            snprintf(input, sizeof input, "%s", p_input);
 
-            free(p_input);
+            if (fgets(input, sizeof(input), stdin) != NULL) {
+                const size_t len = strlen(input);
+                if (len > 0 && input[len - 1] == '\n') {
+                    input[len - 1] = '\0';
+                }
+            }
 
             if (input[0] == 'e') {
                 exit(0);
@@ -240,17 +267,19 @@ find_ndi_source(NDIlib_source_t *source)
 const ProgramOption options[] = {
     { "n,ndi_input",
       "NDI Source address (optional, by default found ndi sources are "
-      "suggested)" },
-    { "f,output_format", "rtsp, rtmp (optional, by default 'rtsp')" },
+      "suggested)",
+      0 },
+    { "f,output_format", "rtsp, rtmp (optional, by default 'rtsp')", 0 },
     { "o,output",
-      "output url (optional, by default 'rtsp://127.0.0.1:8554/live.sdp')" },
-    { "v,video_codec", "ffmpeg video encoder (optional, by default 'libvpx')" },
-    { "a,audio_codec",
-      "ffmpeg audio encoder (optional, by default 'libopus')" },
+      "output url (optional, by default 'rtsp://127.0.0.1:8554/live.sdp')", 0 },
+    { "v,video_codec", "ffmpeg video encoder (optional, by default 'libvpx')",
+      0 },
+    { "a,audio_codec", "ffmpeg audio encoder (optional, by default 'libopus')",
+      0 },
     { "h,help", "show help", 1 },
-    { "video_bitrate", "video bitrate (optional, by default '30000000')" },
-    { "audio_bitrate", "audio bitrate (optional, by default '320000')" },
-    { NULL },
+    { "video_bitrate", "video bitrate (optional, by default '30000000')", 0 },
+    { "audio_bitrate", "audio bitrate (optional, by default '320000')", 0 },
+    { NULL, NULL, 0 },
 };
 
 AppOptions
