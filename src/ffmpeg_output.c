@@ -36,10 +36,9 @@ free_ffmpeg_output_ctx(FFmpegOutputCtx **ctx)
 }
 
 int
-ffmpeg_output_init(FFmpegOutputCtx *ctx, char *format, char *output)
+ffmpeg_output_init(FFmpegOutputCtx *ctx, const char *format, const char *output)
 {
-    int ret;
-    ret = avformat_alloc_output_context2(&ctx->o_ctx, NULL, format, output);
+    int ret = avformat_alloc_output_context2(&ctx->o_ctx, NULL, format, output);
     if (ret < 0) {
         av_error_fmt(ctx->error_str,
                      "could not allocate output format context!", ret);
@@ -81,8 +80,9 @@ ffmpeg_output_close_codecs(FFmpegOutputCtx *ctx)
 }
 
 int
-ffmpeg_output_setup_video(FFmpegOutputCtx *ctx, char *encoder_name, int width,
-                          int height, AVRational framerate, int64_t bitrate)
+ffmpeg_output_setup_video(FFmpegOutputCtx *ctx, const char *encoder_name,
+                          const int width, const int height,
+                          const AVRational framerate, const int64_t bitrate)
 {
     const AVCodec *codec = avcodec_find_encoder_by_name(encoder_name);
     if (!codec) {
@@ -122,8 +122,8 @@ ffmpeg_output_setup_video(FFmpegOutputCtx *ctx, char *encoder_name, int width,
     }
 
     if (codec->id == AV_CODEC_ID_H264) {
-        av_dict_set(&codec_options, "profile", "baseline", 0);
-        av_dict_set(&codec_options, "level", "1.3", 0);
+        // av_dict_set(&codec_options, "profile", "baseline", 0);
+        // av_dict_set(&codec_options, "level", "1.3", 0);
     }
 
     if ((ret = avcodec_open2(c_ctx, codec, &codec_options)) < 0) {
@@ -171,16 +171,24 @@ ffmpeg_output_setup_audio(FFmpegOutputCtx *ctx, char *encoder_name,
     c_ctx->time_base.den = AV_TIME_BASE;
     c_ctx->codec_type = AVMEDIA_TYPE_AUDIO;
 
-    if (codec->supported_samplerates != NULL) {
+    const int *supported_samplerates = NULL;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 13, 100)
+    supported_samplerates = codec->supported_samplerates;
+#else
+    avcodec_get_supported_config(c_ctx, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0,
+                                 (const void **)&supported_samplerates, NULL);
+#endif
+
+    if (supported_samplerates != NULL) {
         int s_rate = 0;
-        for (int i = 0; codec->supported_samplerates[i] != 0; ++i) {
-            if (codec->supported_samplerates[i] == 48000) {
+        for (int i = 0; supported_samplerates[i] != 0; ++i) {
+            if (supported_samplerates[i] == 48000) {
                 s_rate = 48000;
                 break;
             }
         }
         if (s_rate == 0) {
-            s_rate = codec->supported_samplerates[0];
+            s_rate = supported_samplerates[0];
         }
         c_ctx->sample_rate = s_rate;
     }
@@ -188,10 +196,18 @@ ffmpeg_output_setup_audio(FFmpegOutputCtx *ctx, char *encoder_name,
         c_ctx->sample_rate = 48000;
     }
 
-    if (codec->ch_layouts != NULL) {
+    const AVChannelLayout *ch_layouts = NULL;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 13, 100)
+    ch_layouts = codec->ch_layouts;
+#else
+    avcodec_get_supported_config(c_ctx, codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT,
+                                 0, (const void **)&ch_layouts, NULL);
+#endif
+
+    if (ch_layouts != NULL) {
         AVChannelLayout ch_layout = {};
-        for (int i = 0; codec->ch_layouts[i].nb_channels != 0; ++i) {
-            ch_layout = codec->ch_layouts[i];
+        for (int i = 0; ch_layouts[i].nb_channels != 0; ++i) {
+            ch_layout = ch_layouts[i];
             if (ch_layout.nb_channels == 2
                 && ch_layout.u.mask == AV_CH_LAYOUT_STEREO)
                 break;
@@ -203,15 +219,23 @@ ffmpeg_output_setup_audio(FFmpegOutputCtx *ctx, char *encoder_name,
         c_ctx->ch_layout = ch_layout;
     }
 
-    if (codec->sample_fmts != NULL) {
+    const enum AVSampleFormat *sample_fmts = NULL;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 13, 100)
+    sample_fmts = codec->sample_fmts;
+#else
+    avcodec_get_supported_config(c_ctx, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
+                                 (const void **)&sample_fmts, NULL);
+#endif
+
+    if (sample_fmts != NULL) {
         enum AVSampleFormat sample_fmt = 0;
-        for (int i = 0; codec->sample_fmts[i] != 0; ++i) {
-            sample_fmt = codec->sample_fmts[i];
+        for (int i = 0; sample_fmts[i] != 0; ++i) {
+            sample_fmt = sample_fmts[i];
             if (sample_fmt == AV_SAMPLE_FMT_FLTP)
                 break;
         }
         if (sample_fmt != AV_SAMPLE_FMT_FLTP) {
-            sample_fmt = codec->sample_fmts[0];
+            sample_fmt = sample_fmts[0];
         }
         c_ctx->sample_fmt = sample_fmt;
     }
@@ -220,7 +244,7 @@ ffmpeg_output_setup_audio(FFmpegOutputCtx *ctx, char *encoder_name,
 
     AVDictionary *codec_options = NULL;
 
-//    av_dict_set(&codec_options, "frame_duration", "30", 0);
+    // av_dict_set(&codec_options, "frame_duration", "30", 0);
 
     if (ctx->o_ctx->oformat->flags & AVFMT_GLOBALHEADER)
         c_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -258,7 +282,7 @@ ffmpeg_output_write_header(FFmpegOutputCtx *ctx, AVDictionary **av_opts)
 }
 
 int
-send_packets(FFmpegOutputCtx *ctx, AVCodecContext *codec_context,
+send_packets(const FFmpegOutputCtx *ctx, AVCodecContext *codec_context,
              int stream_index);
 
 int
@@ -289,8 +313,8 @@ ffmpeg_output_send_audio_frame(FFmpegOutputCtx *ctx, AVFrame *frame)
 }
 
 int
-send_packets(FFmpegOutputCtx *ctx, AVCodecContext *codec_context,
-             int stream_index)
+send_packets(const FFmpegOutputCtx *ctx, AVCodecContext *codec_context,
+             const int stream_index)
 {
     int ret = 0;
     AVPacket *pkt = av_packet_alloc();
@@ -299,10 +323,11 @@ send_packets(FFmpegOutputCtx *ctx, AVCodecContext *codec_context,
         ret = avcodec_receive_packet(codec_context, pkt);
 
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-            av_packet_unref(pkt);
+            av_packet_free(&pkt);
             return 0;
         }
-        else if (ret < 0) {
+
+        if (ret < 0) {
             av_error_fmt(ctx->error_str,
                          "error receiving packet from codec context!", ret);
         }
@@ -324,5 +349,8 @@ send_packets(FFmpegOutputCtx *ctx, AVCodecContext *codec_context,
 
         av_packet_unref(pkt);
     }
+
+    av_packet_free(&pkt);
+
     return ret;
 }

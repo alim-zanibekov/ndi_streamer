@@ -26,7 +26,8 @@ int
 free_ffmpeg_output_ctx(FFmpegOutputCtx **ctx);
 
 int
-ffmpeg_output_init(FFmpegOutputCtx *ctx, char *format, char *output);
+ffmpeg_output_init(FFmpegOutputCtx *ctx, const char *format,
+                   const char *output);
 
 void
 ffmpeg_output_close(FFmpegOutputCtx *ctx);
@@ -38,8 +39,9 @@ int
 ffmpeg_output_write_header(FFmpegOutputCtx *ctx, AVDictionary **av_opts);
 
 int
-ffmpeg_output_setup_video(FFmpegOutputCtx *ctx, char *encoder_name, int width,
-                          int height, AVRational framerate, int64_t bitrate);
+ffmpeg_output_setup_video(FFmpegOutputCtx *ctx, const char *encoder_name,
+                          int width, int height, AVRational framerate,
+                          int64_t bitrate);
 
 int
 ffmpeg_output_setup_audio(FFmpegOutputCtx *ctx, char *encoder_name,
