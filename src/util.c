@@ -6,21 +6,28 @@
 
 #include "util.h"
 
-#include <pthread.h>
 #include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <pthread.h>
 #endif
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+HANDLE mu;
+CONDITION_VARIABLE cv;
+CRITICAL_SECTION cvl;
+#else
 pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+#endif
 
 int eh_initialized = 0;
-atomic_int eh_got_signal = 0;
+_Atomic(int) eh_got_signal = 0;
 
 typedef struct OPInternalCtx {
     char *short_options;
@@ -33,9 +40,38 @@ BOOL WINAPI
 eh_signal_handler(DWORD param)
 {
     atomic_store(&eh_got_signal, 1);
-    pthread_cond_signal(&cv);
+    WakeAllConditionVariable(&cv);
     return 1;
 }
+
+void
+eh_init()
+{
+    if (!eh_initialized) {
+        atomic_store(&eh_got_signal, 0);
+        mu = CreateMutex(NULL, FALSE, NULL);
+        InitializeConditionVariable(&cv);
+        InitializeCriticalSection(&cvl);
+        SetConsoleCtrlHandler(&eh_signal_handler, 1);
+        eh_initialized = 1;
+    }
+}
+
+void
+eh_wait()
+{
+    if (!eh_initialized) {
+        eh_init();
+    }
+
+    WaitForSingleObject(mu, INFINITE);
+
+    while (eh_alive()) {
+        SleepConditionVariableCS (&cv, &cvl, INFINITE);
+    }
+    ReleaseMutex(mu);
+}
+
 #else
 
 void
@@ -45,30 +81,18 @@ eh_signal_handler(__attribute__((unused)) int _)
     pthread_cond_signal(&cv);
 }
 
-#endif
-
 void
 eh_init()
 {
     if (!eh_initialized) {
         atomic_store(&eh_got_signal, 0);
-#ifdef _WIN32
-        SetConsoleCtrlHandler(&eh_signal_handler, 1);
-#else
         struct sigaction action = {};
         action.sa_handler = &eh_signal_handler;
         sigemptyset(&action.sa_mask);
         action.sa_flags = 0;
         sigaction(SIGINT, &action, NULL);
-#endif
         eh_initialized = 1;
     }
-}
-
-int
-eh_alive()
-{
-    return !atomic_load(&eh_got_signal);
 }
 
 void
@@ -83,6 +107,13 @@ eh_wait()
         pthread_cond_wait(&cv, &mu);
     }
     pthread_mutex_unlock(&mu);
+}
+#endif
+
+int
+eh_alive()
+{
+    return !atomic_load(&eh_got_signal);
 }
 
 OptionParserCtx *
