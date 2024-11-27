@@ -7,7 +7,12 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <stdint.h>
+
 void
 av_error_fmt(char *out, char *str, int ec);
+
+int64_t
+get_current_ts_usec();
 
 #endif

@@ -50,7 +50,8 @@ new_frame_converter_ctx()
     ctx->error_str = malloc(AV_ERROR_MAX_STRING_SIZE + 100);
     ctx->video_frame = av_frame_alloc();
     ctx->audio_frame = av_frame_alloc();
-    ctx->next_audio_pts = INT64_MIN;
+    ctx->frame_index = 0;
+    ctx->start_ts = get_current_ts_usec();
     return ctx;
 }
 
@@ -69,6 +70,13 @@ free_frame_converter_ctx(FrameConverterCtx **ctx)
     free(*ctx);
     *ctx = NULL;
     return 0;
+}
+
+void
+fc_reset(FrameConverterCtx *ctx)
+{
+    ctx->frame_index = 0;
+    ctx->start_ts = get_current_ts_usec();
 }
 
 AVFrame *
@@ -98,10 +106,13 @@ fc_ndi_video_frame_to_avframe(FrameConverterCtx *ctx, AVCodecContext *codec_ctx,
     av_image_fill_pointers(src, src_pix_fmt, in_frame->yres, in_frame->p_data,
                            src_stride);
 
-    sws_scale(ctx->sws_ctx, (const uint8_t *const *)src, src_stride, 0,
-              in_frame->yres, out_frame->data, out_frame->linesize);
+    sws_scale(ctx->sws_ctx, (const uint8_t *const *)src, src_stride, 0, in_frame->yres, out_frame->data,
+              out_frame->linesize);
 
-    out_frame->pts = in_frame->timecode / 10;
+    out_frame->pkt_dts = get_current_ts_usec() - ctx->start_ts;
+    out_frame->pts = ctx->frame_index * AV_TIME_BASE * in_frame->frame_rate_D
+                     / in_frame->frame_rate_N;
+    ctx->frame_index++;
 
     // AV_PICTURE_TYPE_I; // force infra
     out_frame->pict_type = AV_PICTURE_TYPE_NONE;
@@ -119,7 +130,7 @@ fc_ndi_audio_frame_to_avframe(FrameConverterCtx *ctx, AVCodecContext *codec_ctx,
     int remaining_pre
             = ctx->swr_context ? swr_get_out_samples(ctx->swr_context, 0) : 0;
 
-    if (!in_frame && remaining_pre < nb_samples) { // flush
+    if (!in_frame && remaining_pre < nb_samples) { // wait
         return NULL;
     }
 
@@ -133,10 +144,8 @@ fc_ndi_audio_frame_to_avframe(FrameConverterCtx *ctx, AVCodecContext *codec_ctx,
     av_frame_get_buffer(out_frame, 0);
 
     if (!in_frame) { // flush
-        if (swr_get_out_samples(ctx->swr_context, 0) < nb_samples) {
-            return NULL;
-        }
-        out_frame->pts = ctx->next_audio_pts;
+        out_frame->pkt_dts = get_current_ts_usec() - ctx->start_ts;
+        out_frame->pts = swr_next_pts(ctx->swr_context, INT64_MIN);
 
         ret = swr_convert(ctx->swr_context, out_frame->data,
                           out_frame->nb_samples, NULL, 0);
@@ -145,9 +154,6 @@ fc_ndi_audio_frame_to_avframe(FrameConverterCtx *ctx, AVCodecContext *codec_ctx,
             av_error_fmt(ctx->error_str, "error converting frame!", ret);
             return NULL;
         }
-
-        ctx->next_audio_pts = INT64_MIN;
-
         return out_frame;
     }
 
@@ -185,35 +191,19 @@ fc_ndi_audio_frame_to_avframe(FrameConverterCtx *ctx, AVCodecContext *codec_ctx,
         return NULL;
     }
 
-    if (ctx->next_audio_pts == INT64_MIN) {
-        int64_t pts_compensation = ((codec_ctx->time_base.den * remaining_pre)
-                                    / codec_ctx->sample_rate)
-                                   / codec_ctx->time_base.num;
-        ctx->next_audio_pts = in_frame->timecode / 10 - pts_compensation;
-    }
-
     int remaining = swr_get_out_samples(ctx->swr_context, 0);
     if (remaining < nb_samples) {
         return NULL;
     }
 
-    out_frame->pts = ctx->next_audio_pts;
+    out_frame->pkt_dts = get_current_ts_usec() - ctx->start_ts;
+    out_frame->pts = swr_next_pts(ctx->swr_context, INT64_MIN);
 
     ret = swr_convert(ctx->swr_context, out_frame->data, out_frame->nb_samples,
                       NULL, 0);
     if (ret < 0) {
         av_error_fmt(ctx->error_str, "error converting frame!", ret);
         return NULL;
-    }
-
-    if (remaining - ret >= nb_samples) { // flush remaining
-        ctx->next_audio_pts
-                += ((codec_ctx->time_base.den * out_frame->nb_samples)
-                    / out_frame->sample_rate)
-                   / codec_ctx->time_base.num;
-    }
-    else {
-        ctx->next_audio_pts = INT64_MIN;
     }
 
     return out_frame;

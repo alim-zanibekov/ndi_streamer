@@ -18,7 +18,8 @@ typedef struct FrameConverterCtx {
     AVFrame *audio_frame;
     AVFrame *video_frame;
 
-    int64_t next_audio_pts;
+    int64_t frame_index;
+    int64_t start_ts;
 
     char *error_str;
 } FrameConverterCtx;
@@ -28,6 +29,9 @@ new_frame_converter_ctx();
 
 int
 free_frame_converter_ctx(FrameConverterCtx **ctx);
+
+void
+fc_reset(FrameConverterCtx *);
 
 AVFrame *
 fc_ndi_video_frame_to_avframe(FrameConverterCtx *ctx, AVCodecContext *codec_ctx,
